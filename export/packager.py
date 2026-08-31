@@ -4,6 +4,7 @@ Gera planilhas Excel formatadas e constrói o pacote ZIP completo estruturado
 por elevatória e por mês com tabelas analíticas e gráficos em alta resolução.
 """
 
+from __future__ import annotations
 import os
 import sys
 import io
@@ -40,12 +41,24 @@ def gerar_excel_consolidado(
     """Gera o arquivo Excel completo consolidado (base_consolidada_elevatorias.xlsx)."""
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        # Aba 1: Base Geral Analítica
         df_geral_analitico.to_excel(writer, sheet_name='BASE_CONSOLIDADA', index=False)
         
+        # Aba 2: Detalhe das Bombas
         if resumo_bombas is not None and not resumo_bombas.empty:
             resumo_bombas.to_excel(writer, sheet_name='DETALHE_BOMBAS', index=False)
             
+        # Aba 3: Resumo Geral de Auditoria (Garante que sempre exista ao menos 1 aba)
         auditoria = gerar_relatorio_auditoria(df_geral_analitico)
+        df_resumo_aud = pd.DataFrame([{
+            'TOTAL_REGISTROS': auditoria['total_registros'],
+            'TOTAL_EM_CONFORMIDADE': auditoria['total_conformidade'],
+            'TOTAL_DIAS_COM_EXCESSO': auditoria['total_estouros'],
+            'TAXA_CONFORMIDADE_PERC': auditoria['percentual_conformidade']
+        }])
+        df_resumo_aud.to_excel(writer, sheet_name='RESUMO_AUDITORIA', index=False)
+
+        # Abas de detalhe de excessos se houver
         df_aud = auditoria['df_estouros_por_elevatoria']
         if not df_aud.empty:
             df_aud.to_excel(writer, sheet_name='AUDITORIA_ESTOUROS', index=False)
@@ -70,14 +83,23 @@ def gerar_pacote_zip_completo(
         excel_consolidado_bytes = gerar_excel_consolidado(df_geral_analitico, resumo_bombas)
         zip_file.writestr('base_consolidada_elevatorias.xlsx', excel_consolidado_bytes)
 
-        # 2. Relatório de auditoria
+        # 2. Relatório de auditoria (Garante sempre aba válida)
         auditoria = gerar_relatorio_auditoria(df_geral_analitico)
         aud_buf = io.BytesIO()
         with pd.ExcelWriter(aud_buf, engine='openpyxl') as writer:
+            df_resumo_aud = pd.DataFrame([{
+                'TOTAL_REGISTROS': auditoria['total_registros'],
+                'TOTAL_EM_CONFORMIDADE': auditoria['total_conformidade'],
+                'TOTAL_DIAS_COM_EXCESSO': auditoria['total_estouros'],
+                'TAXA_CONFORMIDADE_PERC': auditoria['percentual_conformidade']
+            }])
+            df_resumo_aud.to_excel(writer, sheet_name='CONFORMIDADE_GERAL', index=False)
+
             if not auditoria['df_estouros_por_elevatoria'].empty:
                 auditoria['df_estouros_por_elevatoria'].to_excel(writer, sheet_name='RESUMO_ELEVATORIAS', index=False)
             if not auditoria['df_top_excessos'].empty:
                 auditoria['df_top_excessos'].to_excel(writer, sheet_name='TOP_EXCESSOS', index=False)
+                
         aud_buf.seek(0)
         zip_file.writestr('relatorio_auditoria_outorga.xlsx', aud_buf.getvalue())
 
