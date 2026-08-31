@@ -2,6 +2,7 @@
 Módulo de Cálculo de Vazões, Volume Diário e Ajuste de Outorga (Otimizado com NumPy).
 """
 
+from __future__ import annotations
 import pandas as pd
 import numpy as np
 

@@ -3,6 +3,7 @@ Módulo de Telemetria de Operação de Bombas (Ultra-Otimizado com Vetorização
 Processa milhões de linhas em segundos agrupando todas as bombas em uma única operação matricial.
 """
 
+from __future__ import annotations
 import pandas as pd
 import numpy as np
 import gc

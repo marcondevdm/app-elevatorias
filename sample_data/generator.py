@@ -4,6 +4,7 @@ Cria DataFrames realistas de telemetria, De-Para em Excel e níveis de reservat�
 para fins de teste imediato, validação de regras de negócio e demonstração.
 """
 
+from __future__ import annotations
 import pandas as pd
 import numpy as np
 

@@ -4,6 +4,7 @@ Une a agregação de vazão/outorga com os níveis de reservatórios gerando a b
 e produz relatórios de diagnóstico e conformidade operacional.
 """
 
+from __future__ import annotations
 import pandas as pd
 import numpy as np
 

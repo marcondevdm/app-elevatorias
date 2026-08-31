@@ -1,9 +1,4 @@
-"""
-Aplicação Web Interativa para Telemetria, Análise e Gestão de Elevatórias.
-Permite upload de bases, seleção dinâmica de períodos, processamento completo de telemetria,
-vazões e níveis, visualização de gráficos em alta resolução, edição de dados e exportação de pacotes em ZIP.
-"""
-
+from __future__ import annotations
 import os
 import sys
 
