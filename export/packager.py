@@ -4,10 +4,17 @@ Gera planilhas Excel formatadas e constrói o pacote ZIP completo estruturado
 por elevatória e por mês com tabelas analíticas e gráficos em alta resolução.
 """
 
+import os
+import sys
 import io
 import zipfile
 import pandas as pd
 import matplotlib.pyplot as plt
+
+# Garante path para importação na nuvem
+DIRETORIO_RAIZ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if DIRETORIO_RAIZ not in sys.path:
+    sys.path.insert(0, DIRETORIO_RAIZ)
 
 from visualization.charts import (
     gerar_grafico_horas_totais_diario,
@@ -30,20 +37,14 @@ def gerar_excel_consolidado(
     df_geral_analitico: pd.DataFrame,
     resumo_bombas: pd.DataFrame | None = None
 ) -> bytes:
-    """
-    Gera o arquivo Excel completo consolidado (base_consolidada_elevatorias.xlsx).
-    Contém abas: BASE_CONSOLIDADA, DETALHE_BOMBAS, AUDITORIA_OUTORGA.
-    """
+    """Gera o arquivo Excel completo consolidado (base_consolidada_elevatorias.xlsx)."""
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        # Aba 1: Base Geral Analítica
         df_geral_analitico.to_excel(writer, sheet_name='BASE_CONSOLIDADA', index=False)
         
-        # Aba 2: Detalhe das Bombas
         if resumo_bombas is not None and not resumo_bombas.empty:
             resumo_bombas.to_excel(writer, sheet_name='DETALHE_BOMBAS', index=False)
             
-        # Aba 3: Auditoria de Outorga
         auditoria = gerar_relatorio_auditoria(df_geral_analitico)
         df_aud = auditoria['df_estouros_por_elevatoria']
         if not df_aud.empty:
@@ -61,28 +62,15 @@ def gerar_pacote_zip_completo(
     dpi: int = 300,
     callback_progresso = None
 ) -> bytes:
-    """
-    Gera um pacote .ZIP contendo toda a estrutura de diretórios organizada:
-    pacote_elevatorias/
-    ├── base_consolidada_elevatorias.xlsx
-    ├── relatorio_auditoria_outorga.xlsx
-    └── Elevatorias/
-        └── {NOME_ELEVATORIA}/
-            └── {ANO_MES}/
-                ├── tabela_analitica_{ELEVATORIA}_{MES_ANO}.xlsx
-                ├── 01_horas_totais.png
-                ├── 02_horas_individuais_bombas.png
-                ├── 03_niveis_reservatorio.png
-                └── 04_vazao_e_outorga.png
-    """
+    """Gera um pacote .ZIP contendo toda a estrutura de diretórios organizada por elevatória e mês."""
     zip_buffer = io.BytesIO()
     
     with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
-        # 1. Adiciona a base consolidada global na raiz
+        # 1. Base consolidada global
         excel_consolidado_bytes = gerar_excel_consolidado(df_geral_analitico, resumo_bombas)
         zip_file.writestr('base_consolidada_elevatorias.xlsx', excel_consolidado_bytes)
 
-        # 2. Adiciona o relatório de auditoria na raiz
+        # 2. Relatório de auditoria
         auditoria = gerar_relatorio_auditoria(df_geral_analitico)
         aud_buf = io.BytesIO()
         with pd.ExcelWriter(aud_buf, engine='openpyxl') as writer:
@@ -93,7 +81,7 @@ def gerar_pacote_zip_completo(
         aud_buf.seek(0)
         zip_file.writestr('relatorio_auditoria_outorga.xlsx', aud_buf.getvalue())
 
-        # 3. Iterar por Elevatória e por Mês/Ano para criar as pastas e arquivos
+        # 3. Pastas por Elevatória e Mês
         grupos = df_geral_analitico.groupby(['ELEVATORIA', 'ANO_MES'])
         total_grupos = len(grupos)
         idx_atual = 0
@@ -103,18 +91,16 @@ def gerar_pacote_zip_completo(
             if callback_progresso:
                 callback_progresso(idx_atual / total_grupos, f"Gerando pacote: {elevatoria} - {ano_mes}")
 
-            # Sanitização de nomes para caminho de arquivos no zip
             elev_pasta = str(elevatoria).replace('/', '_').replace('\\', '_').strip()
             mes_pasta = str(ano_mes).replace('/', '_').strip()
             
             caminho_base = f"Elevatorias/{elev_pasta}/{mes_pasta}"
 
-            # Extração de informações de data para nomes e títulos
             primeira_data = df_grupo['DATA'].iloc[0]
             mes_ano_arquivo = primeira_data.strftime('%m_%Y')
             titulo_periodo = f"{df_grupo['MES_NOME'].iloc[0]}/{df_grupo['ANO'].iloc[0]}"
 
-            # A. Planilha Analítica Mensal da Elevatória
+            # A. Planilha Analítica Mensal
             df_grupo_clean = df_grupo.drop(columns=['ANO_MES', 'DATA_FORMATADA', 'MES_NUM', 'MES_NOME', 'ANO'], errors='ignore')
             excel_mensal_bytes = gerar_excel_simples_bytes(df_grupo_clean, nome_aba='TABELA_ANALITICA')
             nome_arq_excel = f"tabela_analitica_{elev_pasta}_{mes_ano_arquivo}.xlsx"

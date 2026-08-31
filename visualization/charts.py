@@ -28,6 +28,16 @@ CORES_BOMBA = {
 }
 ORDEM_BOMBAS_PADRAO = ['BBA-01', 'BBA-02', 'BBA-03', 'BBA-04']
 
+def _aplicar_estilo_seguro():
+    """Aplica o estilo de plot de forma segura com fallbacks."""
+    try:
+        plt.style.use('seaborn-v0_8-whitegrid')
+    except Exception:
+        try:
+            plt.style.use('seaborn-whitegrid')
+        except Exception:
+            plt.style.use('default')
+
 def figura_para_bytes_png(fig: plt.Figure, dpi: int = 300) -> bytes:
     """Converte uma figura Matplotlib para bytes PNG em alta resolução."""
     buf = io.BytesIO()
@@ -59,10 +69,8 @@ def gerar_grafico_horas_totais_diario(
     elevatoria: str,
     titulo_periodo: str = ""
 ) -> plt.Figure:
-    """
-    Gera o gráfico de barras das horas totais de operação útil diária.
-    """
-    plt.style.use('seaborn-v0_8-whitegrid')
+    """Gera o gráfico de barras das horas totais de operação útil diária."""
+    _aplicar_estilo_seguro()
     fig, ax = plt.subplots(figsize=(16, 8))
     fig.patch.set_facecolor(COR_FUNDO)
 
@@ -116,10 +124,8 @@ def gerar_grafico_horas_individuais_bombas(
     elevatoria: str,
     titulo_periodo: str = ""
 ) -> plt.Figure:
-    """
-    Gera subplots verticais com a série diária de cada bomba da elevatória.
-    """
-    plt.style.use('seaborn-v0_8-whitegrid')
+    """Gera subplots verticais com a série diária de cada bomba da elevatória."""
+    _aplicar_estilo_seguro()
     
     bombas_unicas = df_elev_bombas['BOMBA'].unique()
     ordem_bombas = [eq for eq in ORDEM_BOMBAS_PADRAO if eq in bombas_unicas]
@@ -209,10 +215,8 @@ def gerar_grafico_niveis(
     elevatoria: str,
     titulo_periodo: str = ""
 ) -> plt.Figure:
-    """
-    Gera o gráfico de linhas dos níveis do reservatório (% Médio, Máximo e Mínimo).
-    """
-    plt.style.use('seaborn-v0_8-whitegrid')
+    """Gera o gráfico de linhas dos níveis do reservatório (% Médio, Máximo e Mínimo)."""
+    _aplicar_estilo_seguro()
     fig, ax = plt.subplots(figsize=(16, 8))
     fig.patch.set_facecolor(COR_FUNDO)
 
@@ -220,7 +224,6 @@ def gerar_grafico_niveis(
     if 'DATA_FORMATADA' not in df_plot.columns:
         df_plot['DATA_FORMATADA'] = pd.to_datetime(df_plot['DATA']).dt.strftime('%d/%m')
 
-    # Plota as 3 linhas
     ax.plot(df_plot['DATA_FORMATADA'], df_plot['NIVEL_MEDIO'],
             label='Nível Médio (%)', marker='o', color='#FF8010', linewidth=2, zorder=2)
     ax.plot(df_plot['DATA_FORMATADA'], df_plot['NIVEL_MAXIMO'],
@@ -261,10 +264,8 @@ def gerar_grafico_vazao(
     elevatoria: str,
     titulo_periodo: str = ""
 ) -> plt.Figure:
-    """
-    Gera o gráfico de vazões com linha de outorga, zoom adaptativo e offsets sem sobreposição.
-    """
-    plt.style.use('seaborn-v0_8-whitegrid')
+    """Gera o gráfico de vazões com linha de outorga, zoom adaptativo e offsets sem sobreposição."""
+    _aplicar_estilo_seguro()
     fig, ax = plt.subplots(figsize=(16, 8))
     fig.patch.set_facecolor(COR_FUNDO)
 
@@ -274,7 +275,6 @@ def gerar_grafico_vazao(
 
     linha_limite = float(df_plot['Q_MAX_OUTORGA'].iloc[0]) if not df_plot.empty and 'Q_MAX_OUTORGA' in df_plot.columns else 0.0
 
-    # 1. Cálculo de Limites Dinâmicos do Eixo Y (com suporte a zoom)
     all_q_values = pd.concat([df_plot['Q_MIN'], df_plot['Q_MAX'], df_plot['Q_MEDIA']])
     q_min_data = float(all_q_values.min()) if not all_q_values.empty else 0.0
     q_max_data = float(all_q_values.max()) if not all_q_values.empty else 10.0
@@ -285,13 +285,11 @@ def gerar_grafico_vazao(
 
     y_min_limite = max(0.0, q_min_data - y_margin_bottom)
     
-    # Se a outorga for > 10x maior que a vazão real, aplica zoom nos dados
     if (linha_limite > 10) and (linha_limite / (q_max_data + 1e-6) > 10):
         y_max_limite = q_max_data + y_margin_top
     else:
         y_max_limite = pico_maximo + y_margin_top
 
-    # 2. Plotagem das 3 linhas de Vazão
     ax.plot(df_plot['DATA_FORMATADA'], df_plot['Q_MIN'],
             label='Vazão Mínima', marker='o', color='#FF8010', linewidth=2, zorder=2)
     ax.plot(df_plot['DATA_FORMATADA'], df_plot['Q_MAX'],
@@ -299,7 +297,6 @@ def gerar_grafico_vazao(
     ax.plot(df_plot['DATA_FORMATADA'], df_plot['Q_MEDIA'],
             label='Vazão Média', marker='o', color='#209B20', linewidth=2, zorder=2)
 
-    # Linha horizontal de outorga
     if linha_limite > 0:
         ax.axhline(
             y=linha_limite,
@@ -310,7 +307,6 @@ def gerar_grafico_vazao(
             zorder=1
         )
 
-    # 3. Offsets Adaptativos para evitar sobreposição de textos
     range_para_offset = max(y_max_limite - y_min_limite, 5.0)
     offset_base = range_para_offset * 0.018
     multiplicadores = [-1.6, 0.5, 2.6]
