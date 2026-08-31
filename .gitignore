@@ -1,0 +1,26 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Caches e Ambientes Virtuais
+.venv/
+venv/
+ENV/
+env/
+.pytest_cache/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Arquivos de dados temporários e exportações
+*.zip
+*.log
+pacotes_exportados/
+dados_brutos/
+
+# SO e IDEs
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
