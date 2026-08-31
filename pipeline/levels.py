@@ -56,7 +56,14 @@ def _unpivot_e_mapear_nivel_otimizado(
     df_sub['DATA'] = df_sub[timestamp_col_ref].dt.normalize()
     df_sub.drop(columns=[timestamp_col_ref], inplace=True)
 
-    df_diario_cols = df_sub.groupby('DATA').mean()
+    # Conversão rigorosa de strings com vírgula para float antes do cálculo de média
+    cols_valores = [c for c in colunas_selecionadas if c != timestamp_col_ref and c in df_sub.columns]
+    for c in cols_valores:
+        df_sub[c] = df_sub[c].astype(str).str.replace(',', '.', regex=False)
+        df_sub[c] = pd.to_numeric(df_sub[c], errors='coerce').fillna(0.0)
+
+    # Agrupamento diário seguro
+    df_diario_cols = df_sub.groupby('DATA')[cols_valores].mean()
 
     df_melted = df_diario_cols.reset_index().melt(
         id_vars=['DATA'],
