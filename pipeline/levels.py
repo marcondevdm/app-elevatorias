@@ -1,6 +1,6 @@
 """
-Módulo de Tratamento de Níveis de Reservatórios (Ultra-Otimizado com NumPy).
-Realiza o unpivot pré-filtrado por data, escalonamento percentual e validações físicas vetorizadas.
+Módulo de Tratamento de Níveis de Reservatórios (Ultra-Otimizado e Blindado).
+Realiza o unpivot seguro, conversão numérica explícita, escalonamento percentual e validações físicas.
 """
 
 from __future__ import annotations
@@ -14,13 +14,14 @@ def _unpivot_e_mapear_nivel_otimizado(
     nome_coluna_nivel: str,
     fuso_horario: str = 'Etc/GMT+4'
 ) -> pd.DataFrame:
-    """Unpivot ultra-rápido pré-filtrando apenas colunas necessárias."""
+    """Unpivot ultra-rápido e 100% blindado contra strings com vírgula."""
     if df_raw is None or df_raw.empty:
         return pd.DataFrame(columns=['ELEVATORIA', 'DATA', nome_coluna_nivel])
 
     timestamp_cols = [c for c in df_raw.columns if 'Timestamp' in c or 'Data' in c or 'DATA' in c]
     timestamp_col_ref = timestamp_cols[0] if timestamp_cols else df_raw.columns[0]
     
+    # 1. Padronização do De-Para
     df_dp = df_depara_niveis.copy()
     if 'RESERVATORIO' in df_dp.columns and 'TAG_ELIPSE' not in df_dp.columns:
         df_dp.rename(columns={'RESERVATORIO': 'TAG_ELIPSE'}, inplace=True)
@@ -32,51 +33,62 @@ def _unpivot_e_mapear_nivel_otimizado(
     tags_validas = set(df_dp['TAG_ELIPSE'].unique())
     mapa_tag_elev = dict(zip(df_dp['TAG_ELIPSE'], df_dp['ELEVATORIA']))
 
-    colunas_selecionadas = [timestamp_col_ref]
+    # 2. Identificar apenas as colunas mapeadas
+    colunas_valor = [c for c in df_raw.columns if c != timestamp_col_ref]
+    colunas_validas = []
     mapa_col_elev = {}
-    for col in df_raw.columns:
-        if col == timestamp_col_ref:
-            continue
+
+    for col in colunas_valor:
         tag_nome = col.replace(' Value', '').strip().upper()
         if tag_nome in tags_validas:
-            colunas_selecionadas.append(col)
+            colunas_validas.append(col)
             mapa_col_elev[col] = mapa_tag_elev[tag_nome]
         else:
             for t, elev in mapa_tag_elev.items():
                 if t in tag_nome:
-                    colunas_selecionadas.append(col)
+                    colunas_validas.append(col)
                     mapa_col_elev[col] = elev
                     break
 
-    if len(colunas_selecionadas) <= 1:
+    if not colunas_validas:
         return pd.DataFrame(columns=['ELEVATORIA', 'DATA', nome_coluna_nivel])
 
-    df_sub = df_raw[colunas_selecionadas].copy()
+    # 3. Preparação das datas
+    df_sub = df_raw[[timestamp_col_ref] + colunas_validas].copy()
     df_sub[timestamp_col_ref] = pd.to_datetime(df_sub[timestamp_col_ref], dayfirst=True, errors='coerce')
     df_sub['DATA'] = df_sub[timestamp_col_ref].dt.normalize()
+    df_sub.dropna(subset=['DATA'], inplace=True)
     df_sub.drop(columns=[timestamp_col_ref], inplace=True)
 
-    # Conversão rigorosa de strings com vírgula para float antes do cálculo de média
-    cols_valores = [c for c in colunas_selecionadas if c != timestamp_col_ref and c in df_sub.columns]
-    for c in cols_valores:
-        df_sub[c] = df_sub[c].astype(str).str.replace(',', '.', regex=False)
-        df_sub[c] = pd.to_numeric(df_sub[c], errors='coerce').fillna(0.0)
-
-    # Agrupamento diário seguro
-    df_diario_cols = df_sub.groupby('DATA')[cols_valores].mean()
-
-    df_melted = df_diario_cols.reset_index().melt(
+    # 4. Unpivot direto das colunas identificadas
+    df_melted = df_sub.melt(
         id_vars=['DATA'],
-        value_vars=[c for c in colunas_selecionadas if c != timestamp_col_ref],
+        value_vars=colunas_validas,
         var_name='COLUNA',
-        value_name=nome_coluna_nivel
+        value_name='VALOR_RAW'
     )
-    
-    df_melted['ELEVATORIA'] = df_melted['COLUNA'].map(mapa_col_elev)
-    df_melted.dropna(subset=['ELEVATORIA', nome_coluna_nivel], inplace=True)
-    df_melted[nome_coluna_nivel] = pd.to_numeric(df_melted[nome_coluna_nivel], errors='coerce').fillna(0.0)
 
-    return df_melted[['ELEVATORIA', 'DATA', nome_coluna_nivel]]
+    # 5. Conversão numérica 100% explícita de vírgula para ponto float
+    df_melted['VALOR_NUM'] = pd.to_numeric(
+        df_melted['VALOR_RAW'].astype(str).str.replace(',', '.', regex=False),
+        errors='coerce'
+    ).fillna(0.0).astype(np.float64)
+
+    df_melted['ELEVATORIA'] = df_melted['COLUNA'].map(mapa_col_elev)
+    df_melted.dropna(subset=['ELEVATORIA'], inplace=True)
+
+    # 6. Agrupamento diário seguro no campo float
+    if nome_coluna_nivel == 'NIVEL_MAXIMO':
+        df_agrupado = df_melted.groupby(['ELEVATORIA', 'DATA'], as_index=False)['VALOR_NUM'].max()
+    elif nome_coluna_nivel == 'NIVEL_MINIMO':
+        df_agrupado = df_melted.groupby(['ELEVATORIA', 'DATA'], as_index=False)['VALOR_NUM'].min()
+    else:  # NIVEL_MEDIO
+        df_agrupado = df_melted.groupby(['ELEVATORIA', 'DATA'], as_index=False)['VALOR_NUM'].mean()
+
+    df_agrupado.rename(columns={'VALOR_NUM': nome_coluna_nivel}, inplace=True)
+    df_agrupado[nome_coluna_nivel] = df_agrupado[nome_coluna_nivel].round(2)
+
+    return df_agrupado[['ELEVATORIA', 'DATA', nome_coluna_nivel]]
 
 
 def _aplicar_correcao_vetorizada(df_grp: pd.DataFrame) -> pd.DataFrame:
@@ -86,35 +98,44 @@ def _aplicar_correcao_vetorizada(df_grp: pd.DataFrame) -> pd.DataFrame:
 
     df_res = df_grp.sort_values(by='DATA').reset_index(drop=True).copy()
 
-    max_val = df_res['NIVEL_MAXIMO'].max()
-    p90 = df_res['NIVEL_MAXIMO'].quantile(0.90) if len(df_res) >= 2 else max_val
-    dias_pico = df_res.loc[df_res['NIVEL_MAXIMO'] >= p90, 'NIVEL_MAXIMO']
-    val_rep = dias_pico.mean() if not dias_pico.empty else max_val
+    for c in ['NIVEL_MEDIO', 'NIVEL_MAXIMO', 'NIVEL_MINIMO']:
+        if c in df_res.columns:
+            df_res[c] = pd.to_numeric(df_res[c], errors='coerce').fillna(0.0).astype(np.float64)
 
-    fator = 100.0 / val_rep if val_rep > 0 else 1.0
+    # 1. Escalonamento para percentual (0-100%)
+    max_val = float(df_res['NIVEL_MAXIMO'].max())
+    p90 = float(df_res['NIVEL_MAXIMO'].quantile(0.90)) if len(df_res) >= 2 else max_val
+    dias_pico = df_res.loc[df_res['NIVEL_MAXIMO'] >= p90, 'NIVEL_MAXIMO']
+    val_rep = float(dias_pico.mean()) if not dias_pico.empty else max_val
+
+    fator = (100.0 / val_rep) if val_rep > 0 else 1.0
 
     df_res['NIVEL_MAXIMO_PERC'] = (df_res['NIVEL_MAXIMO'] * fator).clip(lower=0.0)
     df_res['NIVEL_MEDIO_PERC'] = (df_res['NIVEL_MEDIO'] * fator).clip(lower=0.0)
     df_res['NIVEL_MINIMO_PERC'] = (df_res['NIVEL_MINIMO'] * fator).clip(lower=0.0)
 
+    # 2. Limites e fallbacks estatísticos
     vals_min_pos = df_res.loc[df_res['NIVEL_MINIMO_PERC'] > 0, 'NIVEL_MINIMO_PERC']
-    min_lim = vals_min_pos.quantile(0.05) if not vals_min_pos.empty else 1.0
-    min_fb = vals_min_pos.mean() if not vals_min_pos.empty else 5.0
+    min_lim = float(vals_min_pos.quantile(0.05)) if not vals_min_pos.empty else 1.0
+    min_fb = float(vals_min_pos.mean()) if not vals_min_pos.empty else 5.0
 
     vals_med_pos = df_res.loc[df_res['NIVEL_MEDIO_PERC'] > 0, 'NIVEL_MEDIO_PERC']
-    med_lim = vals_med_pos.quantile(0.05) if not vals_med_pos.empty else 5.0
-    med_fb = vals_med_pos.mean() if not vals_med_pos.empty else 10.0
+    med_lim = float(vals_med_pos.quantile(0.05)) if not vals_med_pos.empty else 5.0
+    med_fb = float(vals_med_pos.mean()) if not vals_med_pos.empty else 10.0
 
+    # 3. Aplicação Vetorizada sem loops
     df_res['NIVEL_MAXIMO_PERC'] = np.where(df_res['NIVEL_MAXIMO_PERC'] > 100, 100.0, df_res['NIVEL_MAXIMO_PERC'])
     df_res['NIVEL_MEDIO_PERC'] = np.where(df_res['NIVEL_MEDIO_PERC'] > 100, 100.0, df_res['NIVEL_MEDIO_PERC'])
     df_res['NIVEL_MEDIO_PERC'] = np.where(df_res['NIVEL_MEDIO_PERC'] < med_lim, med_fb, df_res['NIVEL_MEDIO_PERC'])
     df_res['NIVEL_MINIMO_PERC'] = np.where(df_res['NIVEL_MINIMO_PERC'] < min_lim, min_fb, df_res['NIVEL_MINIMO_PERC'])
 
+    # 4. Hierarquia Física: Min <= Med <= Max <= 100
     df_res['NIVEL_MINIMO_PERC'] = np.minimum(df_res['NIVEL_MINIMO_PERC'], df_res['NIVEL_MEDIO_PERC'])
     df_res['NIVEL_MEDIO_PERC'] = np.minimum(df_res['NIVEL_MEDIO_PERC'], df_res['NIVEL_MAXIMO_PERC'])
     df_res['NIVEL_MEDIO_PERC'] = np.maximum(df_res['NIVEL_MEDIO_PERC'], df_res['NIVEL_MINIMO_PERC'])
     df_res['NIVEL_MAXIMO_PERC'] = np.minimum(df_res['NIVEL_MAXIMO_PERC'], 100.0)
 
+    # 5. Jitter anti-repetição
     for col in ['NIVEL_MINIMO_PERC', 'NIVEL_MEDIO_PERC', 'NIVEL_MAXIMO_PERC']:
         diff = np.diff(df_res[col].values, prepend=df_res[col].values[0] - 1)
         ajuste = np.where(diff == 0, 0.01, 0.0)
