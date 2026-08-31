@@ -1,7 +1,6 @@
 """
-Módulo de Telemetria de Operação de Bombas.
-Processa os registros de operação minuto a minuto, correlaciona com o De-Para de TAGs
-e calcula as horas de operação diárias para cada bomba e elevatória no período definido.
+Módulo de Telemetria de Operação de Bombas (Ultra-Otimizado com Vetorização NumPy/Pandas).
+Processa milhões de linhas em segundos agrupando todas as bombas em uma única operação matricial.
 """
 
 import pandas as pd
@@ -11,8 +10,6 @@ import gc
 def padronizar_de_para_bombas(df_depara: pd.DataFrame) -> pd.DataFrame:
     """Padroniza e limpa as colunas do De-Para de Bombas."""
     df = df_depara.copy()
-    
-    # Se a coluna se chamar EQUIPAMENTO, renomeia para BOMBA
     if 'EQUIPAMENTO' in df.columns and 'BOMBA' not in df.columns:
         df.rename(columns={'EQUIPAMENTO': 'BOMBA'}, inplace=True)
         
@@ -30,99 +27,121 @@ def processar_telemetria_bombas(
     elevatorias_selecionadas: list[str] | None = None
 ) -> pd.DataFrame:
     """
-    Processa os dados brutos minuto a minuto de status das bombas.
+    Processa os dados brutos minuto a minuto de status das bombas de forma vetorizada.
     
-    Args:
-        df_bruto: DataFrame com timestamp na 1ª coluna e colunas de TAGs com status (1=ligado, 0=desligado).
-        df_depara_bombas: DataFrame da aba BOMBAS_ELIPSE (TAG_ELIPSE, ELEVATORIA, BOMBA).
-        data_inicio: Data inicial do período de processamento.
-        data_fim: Data final do período de processamento.
-        elevatorias_selecionadas: Lista opcional de elevatórias para filtrar.
-        
     Returns:
         pd.DataFrame com colunas: ['ELEVATORIA', 'BOMBA', 'DATA', 'HORAS_LIGADO']
     """
-    data_inicio_ts = pd.to_datetime(data_inicio)
-    data_fim_ts = pd.to_datetime(data_fim)
+    data_inicio_ts = pd.to_datetime(data_inicio).normalize()
+    data_fim_ts = pd.to_datetime(data_fim).normalize()
     
-    # Padronização do De-Para
+    # 1. Padronização do De-Para
     df_depara = padronizar_de_para_bombas(df_depara_bombas)
     
     if elevatorias_selecionadas:
-        elevs_upper = [e.upper().strip() for e in elevatorias_selecionadas]
+        elevs_upper = {e.upper().strip() for e in elevatorias_selecionadas}
         df_depara = df_depara[df_depara['ELEVATORIA'].str.upper().isin(elevs_upper)].copy()
         
     if df_depara.empty:
         return pd.DataFrame(columns=['ELEVATORIA', 'BOMBA', 'DATA', 'HORAS_LIGADO'])
 
-    # Preparação da base de telemetria bruta
-    df_temp = df_bruto.copy()
-    col_ts = df_temp.columns[0]
-    df_temp[col_ts] = pd.to_datetime(df_temp[col_ts], dayfirst=True, errors='coerce')
-    df_temp['DATA_DT'] = df_temp[col_ts].dt.normalize()
+    # 2. Identificação e filtro de data rápido
+    col_ts = df_bruto.columns[0]
+    ts_series = pd.to_datetime(df_bruto[col_ts], dayfirst=True, errors='coerce')
+    data_dt_series = ts_series.dt.normalize()
     
-    # Filtro preliminar de data na base bruta para otimizar velocidade e memória
-    df_temp = df_temp[
-        (df_temp['DATA_DT'] >= data_inicio_ts.normalize()) & 
-        (df_temp['DATA_DT'] <= data_fim_ts.normalize())
-    ].copy()
-    
-    # Mapeamento rápido de colunas disponíveis que contêm 'Value'
-    colunas_valor = [c for c in df_temp.columns if 'Value' in c]
-    
-    # Grade contínua de datas para garantir que todos os dias do período existam (mesmo zerados)
-    idx_periodo = pd.date_range(start=data_inicio_ts.normalize(), end=data_fim_ts.normalize(), freq='D')
-    
-    resultados_finais = []
-    
+    # Máscara de filtro de período
+    mascara_periodo = (data_dt_series >= data_inicio_ts) & (data_dt_series <= data_fim_ts)
+    if not mascara_periodo.any():
+        idx_periodo = pd.date_range(start=data_inicio_ts, end=data_fim_ts, freq='D')
+        registros_zerados = []
+        for _, row in df_depara.iterrows():
+            df_vazio = pd.DataFrame({
+                'DATA': idx_periodo,
+                'HORAS_LIGADO': 0.0,
+                'ELEVATORIA': row['ELEVATORIA'],
+                'BOMBA': row['BOMBA']
+            })
+            registros_zerados.append(df_vazio)
+        return pd.concat(registros_zerados, ignore_index=True) if registros_zerados else pd.DataFrame()
+
+    # Filtra as linhas do período
+    df_filtrado_raw = df_bruto.loc[mascara_periodo].copy()
+    datas_agrupamento = data_dt_series.loc[mascara_periodo]
+
+    # 3. Mapeamento de TAGs para colunas existentes
+    colunas_valor = [c for c in df_filtrado_raw.columns if 'Value' in c]
+    tag_para_coluna = {}
+    for col in colunas_valor:
+        tag_nome = col.replace(' Value', '').strip()
+        tag_para_coluna[tag_nome] = col
+
+    # Mapear cada linha do De-Para para uma coluna física
+    colunas_para_somar = []
+    mapa_col_info = {} # col -> (elevatoria, bomba)
+    bombas_sem_coluna = []
+
     for _, row in df_depara.iterrows():
         tag = str(row['TAG_ELIPSE']).strip()
-        nome_elevatoria = str(row['ELEVATORIA']).strip()
-        nome_bomba = str(row['BOMBA']).strip()
-        
-        # Procura coluna correspondente à TAG no df_bruto
-        coluna_encontrada = [c for c in colunas_valor if tag in c]
-        
-        if coluna_encontrada:
-            c_val = coluna_encontrada[0]
-            
-            # Filtra apenas os minutos onde o equipamento operou (status == 1)
-            status_num = pd.to_numeric(df_temp[c_val], errors='coerce').fillna(0)
-            df_ligado = df_temp[status_num == 1]
-            
-            if not df_ligado.empty:
-                diario = df_ligado.groupby('DATA_DT').size().reset_index(name='MINUTOS')
-                diario['HORAS_LIGADO'] = (diario['MINUTOS'] / 60.0).astype(np.float32)
-                
-                # Reindexa para cobrir todo o período selecionado
-                df_indexed = diario.set_index('DATA_DT')
-                df_resampled = df_indexed.reindex(idx_periodo).fillna({'HORAS_LIGADO': 0.0}).reset_index()
-                df_resampled.rename(columns={'index': 'DATA'}, inplace=True)
-            else:
-                df_resampled = pd.DataFrame({
-                    'DATA': idx_periodo,
-                    'HORAS_LIGADO': 0.0
-                })
-        else:
-            # TAG não encontrada na base bruta: gera série zerada
-            df_resampled = pd.DataFrame({
-                'DATA': idx_periodo,
-                'HORAS_LIGADO': 0.0
-            })
-            
-        df_resampled['ELEVATORIA'] = nome_elevatoria
-        df_resampled['BOMBA'] = nome_bomba
-        
-        # Limita ao teto físico de 24 horas por dia por bomba
-        df_resampled['HORAS_LIGADO'] = df_resampled['HORAS_LIGADO'].clip(lower=0.0, upper=24.0)
-        
-        resultados_finais.append(df_resampled[['ELEVATORIA', 'BOMBA', 'DATA', 'HORAS_LIGADO']])
+        elev = str(row['ELEVATORIA']).strip()
+        bba = str(row['BOMBA']).strip()
 
-    del df_temp
+        col_encontrada = None
+        if tag in tag_para_coluna:
+            col_encontrada = tag_para_coluna[tag]
+        else:
+            # Fallback substring
+            matches = [c for c in colunas_valor if tag in c]
+            if matches:
+                col_encontrada = matches[0]
+
+        if col_encontrada and col_encontrada in df_filtrado_raw.columns:
+            colunas_para_somar.append(col_encontrada)
+            mapa_col_info[col_encontrada] = (elev, bba)
+        else:
+            bombas_sem_coluna.append((elev, bba))
+
+    # 4. Agregação Vetorizada Única (MUITO mais rápida que loop por bomba)
+    idx_periodo = pd.date_range(start=data_inicio_ts, end=data_fim_ts, freq='D')
+    resultados = []
+
+    if colunas_para_somar:
+        # Converte as colunas de status para booleano numérico de forma rápida
+        matriz_status = (df_filtrado_raw[colunas_para_somar] == 1) | (df_filtrado_raw[colunas_para_somar] == '1')
+        
+        # Agrupamento único de todas as colunas de uma vez
+        soma_minutos_diarios = matriz_status.groupby(datas_agrupamento).sum()
+        
+        # Reindexa todas as datas do período de uma só vez
+        soma_minutos_diarios = soma_minutos_diarios.reindex(idx_periodo, fill_value=0)
+        
+        # Converte minutos para horas
+        horas_diarias = (soma_minutos_diarios / 60.0).clip(lower=0.0, upper=24.0).astype(np.float32)
+
+        for col, (elev, bba) in mapa_col_info.items():
+            df_bba = pd.DataFrame({
+                'DATA': idx_periodo,
+                'HORAS_LIGADO': horas_diarias[col].values,
+                'ELEVATORIA': elev,
+                'BOMBA': bba
+            })
+            resultados.append(df_bba)
+
+    # 5. Adiciona bombas não encontradas com horas zeradas
+    for elev, bba in bombas_sem_coluna:
+        df_bba_zerada = pd.DataFrame({
+            'DATA': idx_periodo,
+            'HORAS_LIGADO': 0.0,
+            'ELEVATORIA': elev,
+            'BOMBA': bba
+        })
+        resultados.append(df_bba_zerada)
+
+    del df_filtrado_raw, ts_series, data_dt_series
     gc.collect()
-    
-    if resultados_finais:
-        resumo = pd.concat(resultados_finais, ignore_index=True)
+
+    if resultados:
+        resumo = pd.concat(resultados, ignore_index=True)
         resumo['DATA'] = pd.to_datetime(resumo['DATA']).dt.normalize()
         resumo.sort_values(by=['ELEVATORIA', 'BOMBA', 'DATA'], inplace=True)
         resumo.reset_index(drop=True, inplace=True)
